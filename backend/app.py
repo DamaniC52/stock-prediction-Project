@@ -20,6 +20,15 @@ app.add_middleware(
 )
 
 
+@app.get("/")
+def root():
+    return {
+        "service": "Stock Predictor API",
+        "docs": "/docs",
+        "example": "/predict?ticker=AAPL",
+    }
+
+
 @app.get("/predict")
 def predict(ticker: str = "AAPL"):
     df = fetch_data(ticker)
