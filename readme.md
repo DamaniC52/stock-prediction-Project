@@ -160,4 +160,4 @@ Downloads current S&P 500 constituents from Wikipedia, pulls two years of histor
 
 ---
 
-*Built as a CS project. Not financial advice.*
+*Predictions are statistical estimates, not financial advice.*

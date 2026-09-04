@@ -151,7 +151,7 @@ function App() {
       )}
 
       <footer className="footer">
-        Class project — not financial advice.
+        Predictions are statistical estimates, not financial advice.
       </footer>
     </div>
   );
