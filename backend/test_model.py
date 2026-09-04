@@ -4,48 +4,59 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app import app
-from model import build_features, train_and_predict
+from features import FEATURE_NAMES, TARGET, build_features
+from model import predict_for
 
 
 @pytest.fixture
 def fake_prices():
-    """60 days of synthetic prices, so tests never touch the network."""
-    dates = pd.date_range("2024-01-01", periods=60, freq="D")
-    closes = np.linspace(100, 130, 60) + np.sin(np.arange(60)) * 2
-    return pd.DataFrame({"Close": closes}, index=dates)
+    """Synthetic prices, so tests never depend on the network."""
+    dates = pd.date_range("2024-01-01", periods=400, freq="D")
+    closes = np.linspace(100, 130, 400) + np.sin(np.arange(400)) * 2
+    volume = np.full(400, 1_000_000.0)
+    return pd.DataFrame({"Close": closes, "Volume": volume}, index=dates)
 
 
-def test_build_features_has_no_missing_values(fake_prices):
-    features = build_features(fake_prices)
-    assert not features.isna().any().any()
+def test_features_have_no_missing_values(fake_prices):
+    data = build_features(fake_prices)
+    assert not data.isna().any().any()
 
 
-def test_build_features_drops_warmup_and_final_rows(fake_prices):
-    # 9 rows lost to the 10-day moving average warm-up, 1 to the shifted target.
-    features = build_features(fake_prices)
-    assert len(features) == len(fake_prices) - 10
+def test_features_are_scale_free(fake_prices):
+    """A 10x more expensive stock must produce near-identical features.
+
+    This is what lets one model pool 500 stocks; if it breaks, pooled training
+    is silently invalid.
+    """
+    cheap = build_features(fake_prices)
+    expensive = build_features(fake_prices.assign(Close=fake_prices["Close"] * 10))
+
+    for column in FEATURE_NAMES:
+        assert np.allclose(cheap[column], expensive[column])
 
 
-def test_target_is_next_days_close(fake_prices):
-    features = build_features(fake_prices)
-    first = features.iloc[0]
-    next_day_close = fake_prices["Close"].loc[features.index[1]]
-    assert first["target"] == pytest.approx(next_day_close)
+def test_target_is_next_day_return(fake_prices):
+    data = build_features(fake_prices)
+    first = data.iloc[0]
+    next_close = fake_prices["Close"].loc[data.index[1]]
+    expected = next_close / first["close"] - 1
+    assert first[TARGET] == pytest.approx(expected)
 
 
-def test_split_is_chronological_not_shuffled(fake_prices):
-    # Guards against the data-leakage mistake of shuffling time series data.
-    features = build_features(fake_prices)
-    split = int(len(features) * 0.8)
-    assert features.index[:split].max() < features.index[split:].min()
-
-
-def test_metrics_are_in_valid_ranges(fake_prices):
-    result = train_and_predict(fake_prices)
+def test_prediction_metrics_are_in_valid_ranges(fake_prices):
+    result = predict_for(fake_prices)
     assert 0.0 <= result["direction_accuracy"] <= 1.0
     assert result["mae"] > 0
     assert result["baseline_mae"] > 0
     assert len(result["dates"]) == len(result["actual"]) == len(result["predicted"])
+
+
+def test_too_little_history_returns_none():
+    dates = pd.date_range("2024-01-01", periods=5, freq="D")
+    tiny = pd.DataFrame(
+        {"Close": [10, 11, 12, 11, 10.5], "Volume": [1e6] * 5}, index=dates
+    )
+    assert predict_for(tiny) is None
 
 
 def test_unknown_ticker_returns_404():

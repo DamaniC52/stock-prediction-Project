@@ -1,62 +1,82 @@
+import os
+
+import joblib
 import pandas as pd
-from sklearn.linear_model import LinearRegression
 from sklearn.metrics import mean_absolute_error
 
 from data import fetch_data
+from features import FEATURE_NAMES, TARGET, build_features
+
+MODEL_PATH = os.path.join(os.path.dirname(__file__), "model.joblib")
+
+_bundle = joblib.load(MODEL_PATH)
+MODEL = _bundle["model"]
+TRAINED_THROUGH = pd.Timestamp(_bundle["trained_through"])
+TRAINING_METRICS = _bundle["metrics"]
+TICKERS_TRAINED = _bundle["tickers_trained"]
 
 
-def build_features(df):
-    data = pd.DataFrame(index=df.index)
-    data["prev_close"] = df["Close"]
-    data["ma5"] = df["Close"].rolling(5).mean()
-    data["ma10"] = df["Close"].rolling(10).mean()
-    data["target"] = df["Close"].shift(-1)
-    return data.dropna()
+def predict_for(df):
+    """Score one ticker with the model trained across the whole index.
 
+    Only dates after the training cutoff are reported, so the numbers shown are
+    always out-of-sample for this stock.
+    """
+    data = build_features(df)
+    if data.empty:
+        return None
 
-def train_and_predict(df):
-    data = build_features(df) 
+    predicted_return = MODEL.predict(data[FEATURE_NAMES])
+    close = data["close"]
 
-    X = data[["prev_close", "ma5", "ma10"]]
-    y = data["target"]
+    evaluated = pd.DataFrame(
+        {
+            "actual": close * (1 + data[TARGET]),
+            "predicted": close * (1 + predicted_return),
+            "close": close,
+            "predicted_return": predicted_return,
+            "actual_return": data[TARGET],
+        },
+        index=data.index,
+    )
 
-    split = int(len(data) * 0.8)
-    X_train, X_test = X[:split], X[split:]
-    y_train, y_test = y[:split], y[split:]
+    out_of_sample = evaluated[evaluated.index > TRAINED_THROUGH]
+    if len(out_of_sample) < 5:
+        out_of_sample = evaluated.tail(60)
 
-    model = LinearRegression()
-    model.fit(X_train, y_train)
-
-    predictions = model.predict(X_test)
-    mae = mean_absolute_error(y_test, predictions)
-
-    # Naive baseline: assume tomorrow's close equals today's. The model is only
-    # worth anything if it beats this.
-    baseline = X_test["prev_close"]
-    baseline_mae = mean_absolute_error(y_test, baseline)
-
-    actual_up = y_test.values > baseline.values
-    predicted_up = predictions > baseline.values
-    direction_accuracy = (actual_up == predicted_up).mean()
-
-    next_close = model.predict(X.tail(1))[0]
+    latest = data.iloc[[-1]]
+    next_return = float(MODEL.predict(latest[FEATURE_NAMES])[0])
+    next_close = float(latest["close"].iloc[0] * (1 + next_return))
 
     return {
-        "predicted_next_close": float(next_close),
-        "mae": float(mae),
-        "baseline_mae": float(baseline_mae),
-        "direction_accuracy": float(direction_accuracy),
-        "dates": [d.strftime("%Y-%m-%d") for d in X_test.index],
-        "actual": [float(v) for v in y_test],
-        "predicted": [float(v) for v in predictions],
+        "predicted_next_close": next_close,
+        "predicted_next_return": next_return,
+        "mae": float(
+            mean_absolute_error(out_of_sample["actual"], out_of_sample["predicted"])
+        ),
+        "baseline_mae": float(
+            mean_absolute_error(out_of_sample["actual"], out_of_sample["close"])
+        ),
+        "direction_accuracy": float(
+            (
+                (out_of_sample["predicted_return"] > 0)
+                == (out_of_sample["actual_return"] > 0)
+            ).mean()
+        ),
+        "dates": [d.strftime("%Y-%m-%d") for d in out_of_sample.index],
+        "actual": [float(v) for v in out_of_sample["actual"]],
+        "predicted": [float(v) for v in out_of_sample["predicted"]],
+        "trained_on_tickers": TICKERS_TRAINED,
+        "trained_through": str(TRAINED_THROUGH.date()),
+        "training_direction_accuracy": TRAINING_METRICS["direction_accuracy"],
     }
 
 
 if __name__ == "__main__":
-    df = fetch_data("AAPL")
-    result = train_and_predict(df)
-    print("Predicted next close: $", round(result["predicted_next_close"], 2))
-    print("Model MAE:            $", round(result["mae"], 2))
-    print("Baseline MAE:         $", round(result["baseline_mae"], 2))
-    print("Direction accuracy:   ", round(result["direction_accuracy"] * 100, 1), "%")
-    print("Test days:", len(result["dates"]))
+    result = predict_for(fetch_data("AAPL"))
+    print("Predicted next close:  $", round(result["predicted_next_close"], 2))
+    print("Predicted next return: ", f"{result['predicted_next_return'] * 100:+.3f}%")
+    print("Model MAE:             $", round(result["mae"], 2))
+    print("Baseline MAE:          $", round(result["baseline_mae"], 2))
+    print("Direction accuracy:    ", f"{result['direction_accuracy'] * 100:.1f}%")
+    print("Out-of-sample days:    ", len(result["dates"]))

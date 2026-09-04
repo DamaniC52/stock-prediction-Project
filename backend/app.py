@@ -4,7 +4,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
 from data import fetch_data
-from model import train_and_predict
+from model import predict_for
 
 app = FastAPI(title="Stock Predictor API")
 
@@ -36,6 +36,12 @@ def predict(ticker: str = "AAPL"):
     if df.empty:
         raise HTTPException(status_code=404, detail=f"No data found for '{ticker}'")
 
-    result = train_and_predict(df)
+    result = predict_for(df)
+
+    if result is None:
+        raise HTTPException(
+            status_code=422, detail=f"Not enough price history for '{ticker}'"
+        )
+
     result["ticker"] = ticker.upper()
     return result

@@ -1,8 +1,8 @@
 # Stock Price Predictor
 
-A next-day stock price predictor built with scikit-learn, served over a FastAPI REST API, with a React frontend. Enter a ticker, get a prediction and a chart of how the model performed on unseen data.
+A next-day stock movement predictor trained across all 503 S&P 500 constituents with scikit-learn, served over a FastAPI REST API, with a React frontend. Enter a ticker, get a prediction and a chart of how the model performed on dates it never trained on.
 
-**The interesting part isn't the prediction — it's the evaluation.** The model is benchmarked against a naive baseline, and it loses. See [Results](#results).
+**The interesting part isn't the prediction — it's the evaluation.** Every result is benchmarked against a naive baseline and tested for statistical significance. See [Results](#results).
 
 <!-- Add a screenshot once deployed:
 ![Screenshot](docs/screenshot.png)
@@ -21,44 +21,50 @@ The API runs on a free tier that sleeps when idle, so the first request after a 
 |---|---|
 | Data | yfinance (Yahoo Finance historical prices) |
 | Processing | pandas |
-| Model | scikit-learn — LinearRegression |
+| Model | scikit-learn — LinearRegression, persisted with joblib |
 | API | FastAPI + uvicorn |
 | Frontend | React (Vite) + Chart.js |
 | Tests | pytest |
 
 ## How it works
 
-**Features.** For each trading day the model sees three inputs: the current close, the 5-day moving average, and the 10-day moving average. The label is the *next* day's close, produced with `Close.shift(-1)`.
+**Predict returns, not price.** The target is tomorrow's *percentage change*, not tomorrow's dollar close. This matters: consecutive prices are so highly correlated that a model predicting "tomorrow ≈ today" scores well on dollar error while learning nothing. Predicting the change removes that free ride and forces the model to address the part that is actually unknown. (An earlier version predicted price directly and lost to the naive baseline — see [What changed](#what-changed).)
 
-**Train/test split.** The split is chronological — the first 80% of days train, the most recent 20% test. It is deliberately **not** shuffled. Shuffling time series data lets the model train on future data and be tested on the past, which leaks information and produces scores that look excellent and mean nothing.
+**Features are all scale-free** — returns over 1/5/10 days, gaps between price and its moving averages, realized volatility, and relative volume. Because none of them is a dollar amount, a $500 stock and a $20 stock produce comparable rows, which is what makes it valid to train one model across the entire index. A unit test enforces this property.
 
-**Evaluation.** Three numbers are reported:
+**Trained across the S&P 500.** 503 tickers, ~241,000 daily observations, rather than one stock's ~500 rows.
 
-- **Model MAE** — average error in dollars on the test set.
-- **Baseline MAE** — the same metric for a naive predictor that says *tomorrow's close equals today's*.
-- **Direction accuracy** — how often the model correctly called up vs. down. 50% is a coin flip.
+**Training is offline; serving loads the result.** `train.py` fits the model and writes `model.joblib`; the API loads that artifact at startup and only runs inference per request. Training inside the request would take minutes and exceed the host's memory.
+
+**The split is chronological, not random** — every training row predates every test row (cutoff 2026-04-16). Shuffling time series lets a model learn from the future and produces scores that look excellent and mean nothing.
 
 ## Results
 
-Two years of AAPL data, 99 test days:
+Pooled across 503 tickers, 48,181 test observations on dates after the training cutoff:
 
 | Metric | Value |
 |---|---|
-| Model MAE | $4.19 |
-| Naive baseline MAE | **$4.04** |
-| Direction accuracy | 47.5% |
+| Direction accuracy | **50.96%** |
+| 95% confidence interval | 50.52% – 51.41% |
+| z-score vs. a coin flip | 4.22 |
+| Model MAE | $4.4434 |
+| Naive baseline MAE | $4.4409 |
 
-**The naive baseline beats the model, and direction accuracy is slightly worse than a coin flip.**
+**The direction signal is small but statistically real.** At 4.2 standard errors above 50%, the confidence interval excludes a coin flip. That is a genuine finding — and it is also almost exactly what published research reports for daily equity direction, which is the reason to believe it rather than doubt it.
 
-This is the finding worth reporting, not hiding. Reading MAE alone, $4.19 on a ~$320 stock looks like a 1.3% error and seems good. The baseline shows why that is an illusion: day-to-day price changes are small, so *any* model that outputs something close to today's price scores well on MAE. The regression is essentially learning "tomorrow ≈ today," and adding moving averages makes it marginally worse than just saying so outright.
+**It is not, however, worth money.** A ~1% edge is far below realistic transaction costs. Dollar-error MAE remains a statistical tie with the baseline, which is expected: MAE on price level is dominated by the level itself and is a poor instrument for detecting a small directional edge.
 
-What this actually demonstrates:
+The most interpretable coefficient is `ma5_gap` at **-0.033** — when a stock sits above its 5-day average, the model expects a slightly negative next-day return. That is short-horizon mean reversion, a documented effect, and the model found it independently.
 
-1. **Absolute price is the wrong prediction target.** Because consecutive prices are highly correlated, a price-level metric flatters a model that has learned nothing useful. Predicting *returns* or *direction* is the meaningful framing.
-2. **A metric without a baseline is not a result.** Any error number needs something to compare against before it means anything.
-3. **Sub-50% direction accuracy on ~99 samples is not evidence of an anti-signal** — it's within the range of noise. Claiming a tradeable inverse signal here would be overfitting to a small test set.
+### A caveat worth stating
 
-Beating a persistence baseline on daily equity prices with three moving-average features is not a realistic goal; efficient-market behavior means most of tomorrow's move is genuinely unpredictable from yesterday's price alone. The value of the project is in measuring that honestly rather than reporting a flattering number.
+Run this on a single ticker and you may see something like 56.8% direction accuracy on ~95 days. **That number is not meaningful.** With 95 samples the standard error is ~5.1%, so 56.8% sits about 1.3 standard errors from chance — comfortably inside noise. The pooled 50.96% across 48,181 observations is the number to trust. Sample size is what separates a result from a coincidence, and a single-stock readout is the easiest way to fool yourself here.
+
+## What changed
+
+The first version predicted tomorrow's **price** from moving averages on a single stock. It scored $4.19 MAE against a naive baseline's $4.04 — it lost to simply assuming no change — with 47.5% direction accuracy on 99 days.
+
+Diagnosing *why* drove every change since: the target was wrong (price, not return), the features were three restatements of the same information, and the sample was far too small to measure anything. Fixing all three moved direction accuracy from an unmeasurable 47.5% to a statistically significant 50.96%.
 
 ## Running locally
 
@@ -97,14 +103,30 @@ Covers feature construction, that the split stays chronological, metric ranges, 
 
 ```
 backend/
+  features.py    scale-free feature engineering (shared by training and serving)
+  train.py       offline: downloads the S&P 500, trains, writes model.joblib
+  model.joblib   the trained model artifact
   data.py        fetch and clean prices from yfinance
-  model.py       feature engineering, training, evaluation
+  model.py       loads the artifact, scores a single ticker
   app.py         FastAPI app exposing GET /predict
   test_model.py  pytest suite
 frontend/
-  src/App.jsx        ticker input, stats, data fetching
-  src/PriceChart.jsx Chart.js line chart of actual vs predicted
+  src/App.jsx         ticker input, stat tiles, data fetching
+  src/PriceChart.jsx  Chart.js line chart of actual vs predicted
+  src/DataTable.jsx   table view of the same data
+  src/useChartTheme.js  light/dark chart palette
 ```
+
+`features.py` is imported by both `train.py` and `model.py` on purpose — if training and serving computed features differently, predictions would be wrong in a way nothing would catch.
+
+## Retraining
+
+```bash
+cd backend
+python train.py
+```
+
+Downloads current S&P 500 constituents from Wikipedia, pulls two years of history for each, and overwrites `model.joblib`. Takes a few minutes.
 
 ## Possible extensions
 
