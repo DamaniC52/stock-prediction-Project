@@ -8,8 +8,10 @@ A next-day stock price predictor built with scikit-learn, served over a FastAPI 
 ![Screenshot](docs/screenshot.png)
 -->
 
-**Live demo:** _(add Vercel URL)_
-The API is hosted on a free tier that sleeps when idle, so the first request may take up to a minute to wake it.
+**Live demo:** https://frontend-pi-six-55.vercel.app
+**API docs:** https://stock-prediction-project-q5io.onrender.com/docs
+
+The API runs on a free tier that sleeps when idle, so the first request after a quiet period may take up to a minute to wake it.
 
 ---
 
@@ -113,4 +115,4 @@ frontend/
 
 ---
 
-*Built as a CS coursework project. Not financial advice.*
+*Built as a CS project. Not financial advice.*
