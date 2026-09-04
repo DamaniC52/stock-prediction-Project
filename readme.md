@@ -60,11 +60,33 @@ The most interpretable coefficient is `ma5_gap` at **-0.033** — when a stock s
 
 Run this on a single ticker and you may see something like 56.8% direction accuracy on ~95 days. **That number is not meaningful.** With 95 samples the standard error is ~5.1%, so 56.8% sits about 1.3 standard errors from chance — comfortably inside noise. The pooled 50.96% across 48,181 observations is the number to trust. Sample size is what separates a result from a coincidence, and a single-stock readout is the easiest way to fool yourself here.
 
+## Does the extra data actually help?
+
+Moving to pooled training changed two things at once — the target (price to return) *and* the data volume (1 ticker to 503) — so the improvement can't be credited to either without separating them. `ablation.py` does that: the test set is held fixed at all 48,596 post-cutoff observations, and only the number of training tickers varies.
+
+| Tickers | Train rows | Direction accuracy | z vs 50% | Model MAE | Baseline MAE |
+|---|---|---|---|---|---|
+| 1 | 384 | 49.40% | **−2.63** | 4.5024 | 4.4285 |
+| 5 | 1,920 | 50.02% | 0.11 | 4.4557 | 4.4285 |
+| 25 | 9,600 | 50.90% | 3.96 | 4.4375 | 4.4285 |
+| 100 | 38,400 | **51.30%** | **5.75** | **4.4273** | 4.4285 |
+| 503 | 191,985 | 50.96% | 4.24 | 4.4308 | 4.4285 |
+
+Three things fall out of this:
+
+**Training breadth is the cause.** Everything else is constant down that table, so the climb from 49.40% to 51.30% is attributable to data volume alone — not to the reframed target.
+
+**A single stock is worse than guessing.** 49.40% at z = −2.63 is *significantly below* chance. That isn't a hidden inverse signal; it's a model fitting noise in 384 rows and carrying it to unseen data. The original single-ticker design needed rethinking, not tuning.
+
+**Gains saturate near 100 tickers.** The 51.30% → 50.96% dip at full size is roughly 1.5 standard errors — noise rather than real degradation — but the honest reading is that returns flatten somewhere around 25–100 tickers. A fifth of the data would have captured essentially the whole benefit.
+
+Note also that model MAE only edges past the baseline at 100 tickers, by a fraction of a cent. Dollar error stays a poor instrument here: the signal is directional, and MAE is dominated by the price level.
+
 ## What changed
 
-The first version predicted tomorrow's **price** from moving averages on a single stock. It scored $4.19 MAE against a naive baseline's $4.04 — it lost to simply assuming no change — with 47.5% direction accuracy on 99 days.
+The first version predicted tomorrow's **price** from moving averages on a single stock. It scored $4.19 MAE against a naive baseline's $4.04 — it lost to simply assuming no change — with 47.5% direction accuracy on 99 days, where the standard error was ±5.0% and the number therefore meant almost nothing.
 
-Diagnosing *why* drove every change since: the target was wrong (price, not return), the features were three restatements of the same information, and the sample was far too small to measure anything. Fixing all three moved direction accuracy from an unmeasurable 47.5% to a statistically significant 50.96%.
+Diagnosing *why* drove every change since: the target was wrong (price, not return), the features were three restatements of the same information, and the sample was far too small to measure anything. Fixing all three moved direction accuracy from an unmeasurable 47.5% to a statistically significant 50.96% — and shrank the error bar from ±5.0% to ±0.23%, which is arguably the bigger win.
 
 ## Running locally
 
@@ -105,6 +127,7 @@ Covers feature construction, that the split stays chronological, metric ranges, 
 backend/
   features.py    scale-free feature engineering (shared by training and serving)
   train.py       offline: downloads the S&P 500, trains, writes model.joblib
+  ablation.py    isolates the effect of training breadth on accuracy
   model.joblib   the trained model artifact
   data.py        fetch and clean prices from yfinance
   model.py       loads the artifact, scores a single ticker
