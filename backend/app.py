@@ -26,6 +26,7 @@ def root():
         "service": "Stock Predictor API",
         "docs": "/docs",
         "example": "/predict?ticker=AAPL",
+        "allowed_origins": allowed_origins,
     }
 
 
